@@ -1,0 +1,20 @@
+# ความลับ — ห้ามขึ้น GitHub เด็ดขาด
+.env
+
+# ข้อมูลผู้ใช้ที่บอทบันทึกไว้
+users.json
+users.json.tmp
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# เครื่องมือ/ระบบ
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log

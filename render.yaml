@@ -1,0 +1,25 @@
+# ไฟล์ตั้งค่าสำหรับนำขึ้นโฮสต์ Render.com แบบอัตโนมัติ (Blueprint)
+# วิธีใช้: ดัน (push) โปรเจกต์ขึ้น GitHub แล้วที่ Render เลือก "New > Blueprint"
+# จากนั้นกรอกค่า LINE_CHANNEL_ACCESS_TOKEN และ LINE_CHANNEL_SECRET ในหน้า Environment
+services:
+  - type: web
+    name: pm25-linebot
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    # ใช้ worker เดียว เพื่อให้ตัวตั้งเวลาแจ้งเตือนในตัวโปรแกรมทำงานเพียงชุดเดียว
+    # (ถ้าเพิ่ม worker หลายตัว ตัวตั้งเวลาจะรันซ้ำและอาจแจ้งเตือนซ้ำ)
+    startCommand: gunicorn app:app --workers 1
+    envVars:
+      - key: LINE_CHANNEL_ACCESS_TOKEN
+        sync: false   # กรอกค่าจริงในหน้า Dashboard (ไม่เก็บในไฟล์)
+      - key: LINE_CHANNEL_SECRET
+        sync: false
+      - key: CHECK_TOKEN
+        generateValue: true   # Render สุ่มค่าลับให้อัตโนมัติ เพื่อป้องกันปลายทาง /check
+      - key: DEFAULT_STATION
+        value: "50t"
+      - key: ALERT_ENABLED
+        value: "true"
+      - key: CHECK_INTERVAL_MINUTES
+        value: "60"

@@ -17,6 +17,7 @@ import threading
 import time
 
 import config
+from aqi import STANDARD
 
 _lock = threading.Lock()
 _data = {"users": {}}
@@ -79,6 +80,18 @@ def set_alert(user_id, enabled):
         _save()
 
 
+def set_threshold(user_id, threshold):
+    with _lock:
+        u = _data["users"].setdefault(user_id, _new_record())
+        u["threshold"] = threshold
+        _save()
+
+
+def get_threshold(user_id):
+    with _lock:
+        return _data["users"].get(user_id, {}).get("threshold", STANDARD)
+
+
 def is_alert_on(user_id):
     with _lock:
         u = _data["users"].get(user_id)
@@ -108,7 +121,7 @@ def count():
         return len(_data["users"])
 
 
-def claim_alert(user_id, cooldown_hours, station_id):
+def claim_alert(user_id, cooldown_hours, station_id, threshold):
     """
     ตรวจว่าพ้นช่วงพักการเตือน (cooldown) แล้วหรือยัง — ถ้าพ้นแล้วจะ "จอง" สิทธิ์
     โดยบันทึกเวลาแจ้งเตือนทันทีภายใต้ล็อกเดียวกัน แล้วคืน True
@@ -117,7 +130,8 @@ def claim_alert(user_id, cooldown_hours, station_id):
     """
     with _lock:
         u = _data["users"].get(user_id)
-        if not u or not u.get("alert", True) or u["station"] != station_id:
+        if (not u or not u.get("alert", True) or u["station"] != station_id
+                or u.get("threshold", STANDARD) != threshold):
             return False
         elapsed = time.time() - u.get("last_alert", 0)
         if elapsed < cooldown_hours * 3600:

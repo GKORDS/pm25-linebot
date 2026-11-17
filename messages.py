@@ -43,6 +43,7 @@ def main_quick_reply(alert_on=True):
             QuickReplyItem(action=MessageAction(label="เช็คฝุน", text="เช็คฝุน")),
             QuickReplyItem(action=MessageAction(label="เปลี่ยนพื้นที่", text="เปลี่ยนพื้นที่")),
             QuickReplyItem(action=LocationAction(label="ส่งตำแหน่งของฉัน")),
+            QuickReplyItem(action=MessageAction(label="ตั้งเกณฑ์เตือน", text="ตั้งเกณฑ์เตือน")),
             toggle,
             QuickReplyItem(action=MessageAction(label="วิธีใช้", text="วิธีใช้")),
         ]
@@ -59,12 +60,21 @@ def station_quick_reply():
     return QuickReply(items=items)
 
 
+def threshold_quick_reply():
+    return QuickReply(items=[
+        QuickReplyItem(action=MessageAction(label=f"{value:g}", text=f"ตั้งเกณฑ์เตือน {value:g}"))
+        for value in (25, aqi.STANDARD, 50)
+    ])
+
+
 # ---------- การ์ดรายงานค่าฝุน (Flex Message) ----------
-def _bubble(reading, level, alert=False):
+def _bubble(reading, level, alert_threshold=None):
     pm = reading["pm25"]
     when = f'{reading.get("date", "")} {reading.get("time", "")} น.'.strip()
     aqi_txt = str(int(reading["aqi"])) if reading.get("aqi") is not None else "-"
-    header_text = "⚠️ แจ้งเตือน: ค่าฝุนเกินมาตรฐาน" if alert else "ค่าฝุน PM 2.5 ขณะนี้"
+    header_text = "ค่าฝุ่น PM 2.5 ขณะนี้"
+    if alert_threshold is not None:
+        header_text = f"⚠️ PM2.5 เกินเกณฑ์ที่ตั้งไว้ {alert_threshold:g} {UNIT}"
 
     return {
         "type": "bubble",
@@ -119,7 +129,7 @@ def _bubble(reading, level, alert=False):
     }
 
 
-def report_message(reading, alert=False, quick_reply=None):
+def report_message(reading, alert_threshold=None, quick_reply=None):
     """
     สร้างข้อความรายงานค่าฝุน
       - ถ้า reading เป็น None  -> ข้อความว่าดึงข้อมูลไม่ได้
@@ -141,9 +151,11 @@ def report_message(reading, alert=False, quick_reply=None):
     level = aqi.get_level(reading["pm25"])
     alt = (f'PM2.5 {reading["pm25"]:g} {UNIT} · {level["color_th"]} {level["meaning"]} '
            f'ที่ {reading.get("name_th") or reading.get("station_id")}')
+    if alert_threshold is not None:
+        alt = f"แจ้งเตือนเกิน {alert_threshold:g} {UNIT} · {alt}"
     return FlexMessage(
         alt_text=alt[:399],
-        contents=FlexContainer.from_dict(_bubble(reading, level, alert=alert)),
+        contents=FlexContainer.from_dict(_bubble(reading, level, alert_threshold)),
         quick_reply=quick_reply,
     )
 
@@ -172,7 +184,7 @@ HELP_TEXT = (
     "• เช็คฝุน — ดูค่าฝุนพื้นที่ของคุณตอนนี้\n"
     "• เปลี่ยนพื้นที่ — เลือกสถานีตรวจวัด หรือส่งตำแหน่ง 📍\n"
     "• เปิดแจ้งเตือน / ปิดแจ้งเตือน — ตั้งค่าการแจ้งเตือนอัตโนมัติ\n\n"
-    f"เมื่อค่าฝุนเกินมาตรฐาน {aqi.STANDARD:g} {UNIT} บอทจะส่งข้อความแจ้งเตือนให้อัตโนมัติ\n"
+    f"• ตั้งเกณฑ์เตือน 25 — เปลี่ยนค่าเตือนและตรวจทันที (ค่าเริ่มต้น {aqi.STANDARD:g} {UNIT})\n"
     f"{SOURCE}"
 )
 

@@ -11,6 +11,7 @@ app.py
 """
 
 import logging
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -40,7 +41,6 @@ from linebot.v3.webhooks import (
 )
 
 import config
-import aqi
 import air4thai
 import messages
 import storage
@@ -75,6 +75,47 @@ def push(user_id, messages_):
         )
 
 
+def configure_threshold(user_id, reply_token, value):
+    alert_on = storage.is_alert_on(user_id)
+    menu = messages.main_quick_reply(alert_on)
+    if not value:
+        threshold = storage.get_threshold(user_id)
+        reply(reply_token, messages.text_message(
+            f"เกณฑ์ของคุณตอนนี้ {threshold:g} {messages.UNIT}\n"
+            "กดเลือกค่า หรือพิมพ์ ตั้งเกณฑ์เตือน 30.5",
+            quick_reply=messages.threshold_quick_reply(),
+        ))
+        return
+
+    if not re.fullmatch(r"\d{1,4}(?:\.\d)?", value) or float(value) > 1000:
+        reply(reply_token, messages.text_message(
+            "กรอกค่า 0–1000 โดยใช้ทศนิยมได้ 1 ตำแหน่ง เช่น ตั้งเกณฑ์เตือน 30.5",
+            quick_reply=messages.threshold_quick_reply(),
+        ))
+        return
+
+    threshold = float(value)
+    storage.set_threshold(user_id, threshold)
+    station_id = storage.get_station(user_id)
+    reading = air4thai.get_reading(station_id)
+    note = f"บันทึกเกณฑ์ PM2.5 ที่ {threshold:g} {messages.UNIT} แล้ว"
+    if not has_current_pm25(reading):
+        status = "ยังไม่มีข้อมูลล่าสุดของสถานีสำหรับตรวจทันที"
+    else:
+        pm25 = reading["pm25"]
+        if pm25 > threshold and storage.claim_alert(user_id, 0, station_id, threshold):
+            reply(reply_token, [
+                messages.text_message(note),
+                messages.report_message(reading, alert_threshold=threshold, quick_reply=menu),
+            ])
+            return
+        comparison = "เกินเกณฑ์" if pm25 > threshold else "ยังไม่เกินเกณฑ์"
+        status = f"ค่าฝุ่นล่าสุด {pm25:g} {messages.UNIT} {comparison}"
+    if not alert_on:
+        status += "\nการแจ้งเตือนปิดอยู่ พิมพ์ เปิดแจ้งเตือน เพื่อเปิดใช้งาน"
+    reply(reply_token, messages.text_message(f"{note}\n{status}", quick_reply=menu))
+
+
 # ---------- เว็บฮุกรับเหตุการณ์จาก LINE ----------
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -101,6 +142,11 @@ def on_text(event):
     alert_on = storage.is_alert_on(user_id)
     low = text.lower()
 
+    parts = text.split(maxsplit=1)
+    if parts and parts[0] == "ตั้งเกณฑ์เตือน":
+        configure_threshold(user_id, event.reply_token, parts[1] if len(parts) == 2 else "")
+        return
+
     # 1) ผู้ใช้พิมพ์/กดเลือกรหัสสถานีโดยตรง (เช่น "50t")
     if stations.is_known(text):
         storage.set_station(user_id, text)
@@ -122,7 +168,8 @@ def on_text(event):
     if "เปิดแจ้งเตือน" in text:
         storage.set_alert(user_id, True)
         reply(event.reply_token, messages.text_message(
-            f"🔔 เปิดการแจ้งเตือนแล้ว เมื่อค่าฝุนเกิน {aqi.STANDARD:g} {messages.UNIT} จะแจ้งให้ทราบอัตโนมัติ",
+            f"🔔 เปิดการแจ้งเตือนแล้ว เมื่อค่าฝุ่นเกิน {storage.get_threshold(user_id):g} "
+            f"{messages.UNIT} จะแจ้งให้ทราบอัตโนมัติ",
             quick_reply=messages.main_quick_reply(alert_on=True),
         ))
         return
@@ -140,7 +187,7 @@ def on_text(event):
         return
 
     # 5) ขอเช็คค่าฝุน (คำว่า ฝุน / เช็ค / pm / aqi / อากาศ)
-    if any(k in text for k in ("ฝุน", "เช็ค", "อากาศ")) or any(k in low for k in ("pm", "aqi", "air")):
+    if any(k in text for k in ("ฝุน", "ฝุ่น", "เช็ค", "เช็ก", "อากาศ")) or any(k in low for k in ("pm", "aqi", "air")):
         reading = air4thai.get_reading(storage.get_station(user_id))
         reply(event.reply_token, messages.report_message(reading, quick_reply=messages.main_quick_reply(alert_on)))
         return
@@ -199,10 +246,15 @@ def is_current_reading(reading, now):
     return timedelta(0) <= now - observed <= MAX_ALERT_READING_AGE
 
 
+def has_current_pm25(reading):
+    return bool(reading and reading.get("pm25") is not None
+                and is_current_reading(reading, datetime.now(THAILAND_TIME)))
+
+
 def check_and_alert():
     """
     ตรวจค่าฝุนของสถานีที่ผู้ใช้แต่ละคนเลือกไว้
-    ถ้าเกินมาตรฐาน (> 37.5) และพ้นช่วงพักการเตือนแล้ว จะส่ง Push message
+    ถ้าเกินเกณฑ์ของผู้ใช้และพ้นช่วงพักการเตือนแล้ว จะส่ง Push message
     คืนจำนวนข้อความแจ้งเตือนที่ส่งออกไป
     """
     if not config.is_configured():
@@ -217,20 +269,19 @@ def check_and_alert():
     sent = 0
     for station_id, uids in by_station.items():
         reading = air4thai.get_reading(station_id)
-        if not reading or reading.get("pm25") is None:
+        if not has_current_pm25(reading):
             continue
-        if not aqi.is_over_standard(reading["pm25"]):
-            continue
-        if not is_current_reading(reading, datetime.now(THAILAND_TIME)):
-            log.info("ข้ามการแจ้งเตือนสถานี %s เพราะข้อมูลหมดอายุหรือเวลาไม่ถูกต้อง", station_id)
-            continue
-        msg = messages.report_message(reading, alert=True, quick_reply=messages.main_quick_reply())
         for uid in uids:
+            threshold = storage.get_threshold(uid)
+            if reading["pm25"] <= threshold:
+                continue
             # จอง (claim) สิทธิ์แจ้งเตือนแบบ atomic ก่อนส่ง เพื่อกันการเตือนซ้ำ
             # หากมีหลายเธรดเรียก check_and_alert พร้อมกัน (ตัวตั้งเวลา + /check)
-            if not storage.claim_alert(uid, config.ALERT_COOLDOWN_HOURS, station_id):
+            if not storage.claim_alert(uid, config.ALERT_COOLDOWN_HOURS, station_id, threshold):
                 continue
             try:
+                msg = messages.report_message(reading, alert_threshold=threshold,
+                                              quick_reply=messages.main_quick_reply())
                 push(uid, msg)
                 sent += 1
             except Exception as e:  # ผู้ใช้อาจบล็อกบอท หรือเครือข่ายมีปัญหา
@@ -250,6 +301,7 @@ def home():
         f"<p>สถานะ: {status}</p>"
         f"<p>ผู้ใช้ที่ลงทะเบียน: {storage.count()} คน · "
         f"แจ้งเตือนอัตโนมัติ: {'เปิด' if config.ALERT_ENABLED else 'ปิด'}</p>"
+        "<p>ตั้งเกณฑ์ส่วนตัวใน LINE ด้วยคำสั่ง ตั้งเกณฑ์เตือน 25</p>"
     )
 
 

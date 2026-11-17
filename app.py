@@ -12,6 +12,7 @@ app.py
 
 import logging
 import sys
+from datetime import datetime, timedelta, timezone
 
 # ให้คอนโซลแสดงภาษาไทยได้ถูกต้อง (โดยเฉพาะบน Windows ที่ใช้ค่าเริ่มต้น cp1252)
 for _stream in (sys.stdout, sys.stderr):
@@ -184,6 +185,20 @@ def on_follow(event):
 
 
 # ---------- การแจ้งเตือนอัตโนมัติเมื่อค่าฝุนเกินมาตรฐาน ----------
+THAILAND_TIME = timezone(timedelta(hours=7))
+MAX_ALERT_READING_AGE = timedelta(hours=3)
+
+
+def is_current_reading(reading, now):
+    try:
+        observed = datetime.strptime(
+            f'{reading.get("date")} {reading.get("time")}', "%Y-%m-%d %H:%M"
+        ).replace(tzinfo=THAILAND_TIME)
+    except ValueError:
+        return False
+    return timedelta(0) <= now - observed <= MAX_ALERT_READING_AGE
+
+
 def check_and_alert():
     """
     ตรวจค่าฝุนของสถานีที่ผู้ใช้แต่ละคนเลือกไว้
@@ -206,17 +221,21 @@ def check_and_alert():
             continue
         if not aqi.is_over_standard(reading["pm25"]):
             continue
+        if not is_current_reading(reading, datetime.now(THAILAND_TIME)):
+            log.info("ข้ามการแจ้งเตือนสถานี %s เพราะข้อมูลหมดอายุหรือเวลาไม่ถูกต้อง", station_id)
+            continue
         msg = messages.report_message(reading, alert=True, quick_reply=messages.main_quick_reply())
         for uid in uids:
             # จอง (claim) สิทธิ์แจ้งเตือนแบบ atomic ก่อนส่ง เพื่อกันการเตือนซ้ำ
             # หากมีหลายเธรดเรียก check_and_alert พร้อมกัน (ตัวตั้งเวลา + /check)
-            if not storage.claim_alert(uid, config.ALERT_COOLDOWN_HOURS):
+            if not storage.claim_alert(uid, config.ALERT_COOLDOWN_HOURS, station_id):
                 continue
             try:
                 push(uid, msg)
                 sent += 1
             except Exception as e:  # ผู้ใช้อาจบล็อกบอท หรือเครือข่ายมีปัญหา
-                log.warning("ส่งแจ้งเตือนไป %s ไม่สำเร็จ: %s", uid, e)
+                log.warning("ส่งแจ้งเตือน LINE ไม่สำเร็จ (%s, status=%s)",
+                            type(e).__name__, getattr(e, "status", None))
     log.info("ตรวจค่าฝุนเสร็จ ส่งแจ้งเตือน %d ข้อความ", sent)
     return sent
 
@@ -273,7 +292,10 @@ def start_scheduler():
         return
     from apscheduler.schedulers.background import BackgroundScheduler
     scheduler = BackgroundScheduler()
-    scheduler.add_job(check_and_alert, "interval", minutes=config.CHECK_INTERVAL_MINUTES, id="pm25-check")
+    scheduler.add_job(
+        check_and_alert, "interval", minutes=config.CHECK_INTERVAL_MINUTES,
+        id="pm25-check", next_run_time=datetime.now(timezone.utc),
+    )
     scheduler.start()
     _scheduler_started = True
     log.info("เริ่มตัวตั้งเวลาตรวจค่าฝุนทุก %d นาที", config.CHECK_INTERVAL_MINUTES)

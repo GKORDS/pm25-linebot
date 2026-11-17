@@ -4,19 +4,30 @@ air4thai.py
 ดึงข้อมูลคุณภาพอากาศจากระบบ Air4Thai ของกรมควบคุมมลพิษ
 
 หมายเหตุสำคัญ (ตรวจสอบจาก API จริง):
-  * ต้องเรียกที่ URL ลงท้าย ".php" และใช้ http (ไม่ใช่ https เพราะใบรับรองหมดอายุ)
+  * เรียก URL ทางการที่ลงท้าย ".php" ผ่าน HTTPS
   * ค่าทุกอย่างใน JSON เป็น "สตริง" ต้องแปลงเป็นตัวเลขเอง
   * ถ้าไม่มีข้อมูลจะเป็นค่า "-1"
   * ข้อมูลอัปเดตเป็นรายชั่วโมง จึง cache ไว้ชั่วคราวเพื่อลดการเรียกซ้ำ
 """
 
+import json
 import math
+import ssl
 import time
-
-import requests
+from pathlib import Path
+from urllib.request import urlopen
 
 # Endpoint จริงของ Air4Thai (คืนข้อมูลทุกสถานีในครั้งเดียว ~175 สถานี)
-API_URL = "http://air4thai.pcd.go.th/services/getNewAQI_JSON.php"
+API_URL = "https://air4thai.pcd.go.th/services/getNewAQI_JSON.php"
+
+# Air4Thai currently serves an incomplete chain for its Let's Encrypt leaf.
+# Supply the missing intermediates and still require a trusted root.
+# Source: https://letsencrypt.org/certificates/
+_tls_context = ssl.create_default_context()
+_tls_context.verify_flags &= ~ssl.VERIFY_X509_PARTIAL_CHAIN
+_tls_context.load_verify_locations(
+    cafile=str(Path(__file__).with_name("air4thai-intermediates.pem"))
+)
 
 # เก็บผลลัพธ์ล่าสุดไว้ในหน่วยความจำ เพื่อไม่ให้เรียก API ถี่เกินไป
 CACHE_TTL_SECONDS = 600  # 10 นาที
@@ -38,9 +49,8 @@ def _fetch_all(force=False):
     if not force and _cache["stations"] is not None and now - _cache["ts"] < CACHE_TTL_SECONDS:
         return _cache["stations"]
 
-    resp = requests.get(API_URL, timeout=15)
-    resp.raise_for_status()
-    stations = resp.json().get("stations", [])
+    with urlopen(API_URL, timeout=15, context=_tls_context) as response:
+        stations = json.load(response).get("stations", [])
     _cache["stations"] = stations
     _cache["ts"] = now
     return stations
